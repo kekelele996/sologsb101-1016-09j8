@@ -24,6 +24,9 @@ export default function App(props: RouteSectionProps) {
     observations: pondStore.state.counts.observations ?? 0,
     assays: pondStore.state.counts.assays ?? 0,
     schedules: pondStore.state.counts.schedules ?? 0,
+    pumpUnits: pondStore.state.counts.pumpUnits ?? 0,
+    pumpSlots: pondStore.state.counts.pumpSlots ?? 0,
+    pumpMeters: pondStore.state.counts.pumpMeters ?? 0,
   });
 
   const currentSeries = () => pondStore.state.currentSeries ?? '全部池系';
@@ -47,6 +50,7 @@ export default function App(props: RouteSectionProps) {
           <span class="rounded-full bg-white/15 px-2.5 py-1">观测 {counts().observations} 条</span>
           <span class="rounded-full bg-white/15 px-2.5 py-1">化验 {counts().assays} 条</span>
           <span class="rounded-full bg-white/15 px-2.5 py-1">走水 {counts().schedules} 条</span>
+          <span class="rounded-full bg-white/15 px-2.5 py-1">泵组 {counts().pumpUnits} 组</span>
         </div>
       </header>
 

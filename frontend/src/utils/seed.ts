@@ -9,6 +9,7 @@ import type { Gate } from '../types/gate';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
 import type { Schedule } from '../types/schedule';
+import type { PumpUnit, PumpSlot, PumpMeter } from '../types/pump';
 import { autoVerdict, estimateEvapMm } from './brine';
 
 const SEED_TIME = '2026-09-01T00:30:00.000Z';
@@ -20,6 +21,8 @@ export const SEED_IDS = {
   pondC: 'pond-north-03',
   pondD: 'pond-south-04',
   pondE: 'pond-south-05',
+  pumpUnitNorth: 'pumpunit-north',
+  pumpUnitSouth: 'pumpunit-south',
 } as const;
 
 function wrap<T>(row: Omit<T, 'createdAt' | 'updatedAt' | 'revision'>): T {
@@ -128,20 +131,117 @@ export async function seedDatabase(): Promise<void> {
     }),
   ];
 
-  // ---------------- 走水编排（覆盖四种状态，orderIndex 决定先后） ----------------
-  const schedules: Schedule[] = [
-    wrap<Schedule>({ id: 'schedule-a1', pondId: SEED_IDS.pondA, planDate: '2026-10-02', targetDensity: 1.115, volumeM3: 1200, operator: '韩江', state: '已排', orderIndex: 1 }),
-    wrap<Schedule>({ id: 'schedule-d1', pondId: SEED_IDS.pondD, planDate: '2026-10-04', targetDensity: 1.098, volumeM3: 1600, operator: '王锐', state: '已排', orderIndex: 2 }),
-    wrap<Schedule>({ id: 'schedule-b1', pondId: SEED_IDS.pondB, planDate: '2026-10-06', targetDensity: 1.175, volumeM3: 900, operator: '韩江', state: '走水中', orderIndex: 3 }),
-    wrap<Schedule>({ id: 'schedule-c1', pondId: SEED_IDS.pondC, planDate: '2026-10-12', targetDensity: 1.255, volumeM3: 600, operator: '李文', state: '待排', orderIndex: 4 }),
-    wrap<Schedule>({ id: 'schedule-e1', pondId: SEED_IDS.pondE, planDate: '2026-09-28', targetDensity: 1.15, volumeM3: 700, operator: '王锐', state: '已出卤', orderIndex: 5 }),
+  // ---------------- 泵房泵位账（泵组按池系，泵位时段按计划日期） ----------------
+  const pumpUnits: PumpUnit[] = [
+    wrap<PumpUnit>({
+      id: SEED_IDS.pumpUnitNorth,
+      code: '北部一系泵组',
+      seriesName: '北部一系',
+      status: '在用',
+      note: '服务北部一系各池走水',
+    }),
+    wrap<PumpUnit>({
+      id: SEED_IDS.pumpUnitSouth,
+      code: '南部二系泵组',
+      seriesName: '南部二系',
+      status: '在用',
+      note: '服务南部二系各池走水',
+    }),
   ];
 
-  await db.transaction('rw', db.ponds, db.gates, db.observations, db.assays, db.schedules, async () => {
-    await db.ponds.bulkPut(ponds);
-    await db.gates.bulkPut(gates);
-    await db.observations.bulkPut(observations);
-    await db.assays.bulkPut(assays);
-    await db.schedules.bulkPut(schedules);
-  });
+  /** 泵位时段：容量按当日计划量 + 500 方兜底；北-03 设一小一大两个泵位，演示顺延与放行 */
+  const pumpSlots: PumpSlot[] = [
+    wrap<PumpSlot>({ id: 'pumpslot-a1', pumpUnitId: SEED_IDS.pumpUnitNorth, positionCode: '1#', date: '2026-10-02', capacityM3: 1700, status: '在用', note: '' }),
+    wrap<PumpSlot>({ id: 'pumpslot-d1', pumpUnitId: SEED_IDS.pumpUnitSouth, positionCode: '1#', date: '2026-10-04', capacityM3: 2100, status: '在用', note: '' }),
+    wrap<PumpSlot>({ id: 'pumpslot-b1', pumpUnitId: SEED_IDS.pumpUnitNorth, positionCode: '2#', date: '2026-10-06', capacityM3: 1400, status: '在用', note: '' }),
+    wrap<PumpSlot>({ id: 'pumpslot-c1', pumpUnitId: SEED_IDS.pumpUnitNorth, positionCode: '1#', date: '2026-10-12', capacityM3: 500, status: '在用', note: '容量不足，放行北-03 会顺延' }),
+    wrap<PumpSlot>({ id: 'pumpslot-c2', pumpUnitId: SEED_IDS.pumpUnitNorth, positionCode: '2#', date: '2026-10-12', capacityM3: 1200, status: '在用', note: '' }),
+    wrap<PumpSlot>({ id: 'pumpslot-e1', pumpUnitId: SEED_IDS.pumpUnitSouth, positionCode: '2#', date: '2026-09-28', capacityM3: 1200, status: '在用', note: '' }),
+  ];
+
+  // ---------------- 走水编排（覆盖四种状态，orderIndex 决定先后，均挂接泵位） ----------------
+  const schedules: Schedule[] = [
+    wrap<Schedule>({
+      id: 'schedule-a1',
+      pondId: SEED_IDS.pondA,
+      planDate: '2026-10-02',
+      targetDensity: 1.115,
+      volumeM3: 1200,
+      operator: '韩江',
+      state: '已排',
+      orderIndex: 1,
+      pumpUnitId: SEED_IDS.pumpUnitNorth,
+      pumpSlotId: 'pumpslot-a1',
+    }),
+    wrap<Schedule>({
+      id: 'schedule-d1',
+      pondId: SEED_IDS.pondD,
+      planDate: '2026-10-04',
+      targetDensity: 1.098,
+      volumeM3: 1600,
+      operator: '王锐',
+      state: '已排',
+      orderIndex: 2,
+      pumpUnitId: SEED_IDS.pumpUnitSouth,
+      pumpSlotId: 'pumpslot-d1',
+    }),
+    wrap<Schedule>({
+      id: 'schedule-b1',
+      pondId: SEED_IDS.pondB,
+      planDate: '2026-10-06',
+      targetDensity: 1.175,
+      volumeM3: 900,
+      operator: '韩江',
+      state: '走水中',
+      orderIndex: 3,
+      pumpUnitId: SEED_IDS.pumpUnitNorth,
+      pumpSlotId: 'pumpslot-b1',
+    }),
+    wrap<Schedule>({
+      id: 'schedule-c1',
+      pondId: SEED_IDS.pondC,
+      planDate: '2026-10-12',
+      targetDensity: 1.255,
+      volumeM3: 600,
+      operator: '李文',
+      state: '待排',
+      orderIndex: 4,
+      pumpUnitId: SEED_IDS.pumpUnitNorth,
+    }),
+    wrap<Schedule>({
+      id: 'schedule-e1',
+      pondId: SEED_IDS.pondE,
+      planDate: '2026-09-28',
+      targetDensity: 1.15,
+      volumeM3: 700,
+      operator: '王锐',
+      state: '已出卤',
+      orderIndex: 5,
+      pumpUnitId: SEED_IDS.pumpUnitSouth,
+      pumpSlotId: 'pumpslot-e1',
+    }),
+  ];
+
+  // ---------------- 泵房抄表净量（按池按日期；南-04 故意差 200 方，演示对账超容差） ----------------
+  const pumpMeters: PumpMeter[] = [
+    wrap<PumpMeter>({ id: 'meter-a1', pondId: SEED_IDS.pondA, date: '2026-10-02', netVolumeM3: 1180, note: '泵房抄表' }),
+    wrap<PumpMeter>({ id: 'meter-d1', pondId: SEED_IDS.pondD, date: '2026-10-04', netVolumeM3: 1400, note: '泵房抄表（与计划差 200 方，待复核）' }),
+    wrap<PumpMeter>({ id: 'meter-b1', pondId: SEED_IDS.pondB, date: '2026-10-06', netVolumeM3: 900, note: '泵房抄表' }),
+    wrap<PumpMeter>({ id: 'meter-e1', pondId: SEED_IDS.pondE, date: '2026-09-28', netVolumeM3: 700, note: '泵房抄表' }),
+  ];
+
+  await db.transaction(
+    'rw',
+    [db.ponds, db.gates, db.observations, db.assays, db.schedules, db.pumpUnits, db.pumpSlots, db.pumpMeters],
+    async () => {
+      await db.ponds.bulkPut(ponds);
+      await db.gates.bulkPut(gates);
+      await db.observations.bulkPut(observations);
+      await db.assays.bulkPut(assays);
+      await db.pumpUnits.bulkPut(pumpUnits);
+      await db.pumpSlots.bulkPut(pumpSlots);
+      await db.schedules.bulkPut(schedules);
+      await db.pumpMeters.bulkPut(pumpMeters);
+    },
+  );
 }

@@ -27,6 +27,14 @@ export interface Schedule {
   state: ScheduleState
   /** 手工拖拽后的排序序号，越小越先走水 */
   orderIndex: number
+  /** 挂接的泵组（泵房泵位账）——v3 起 */
+  pumpUnitId?: string
+  /** 挂接的泵位时段——v3 起；放行时选定，停泵 / 改派后清空 */
+  pumpSlotId?: string
+  /** 容量不足时的顺延差量（m³）：计划量超出泵位可用容量的部分——v3 起 */
+  shortfallM3?: number
+  /** 只读标记：旧数据升级按池系反推不到泵组的计划留只读，不可挂接泵位——v3 起 */
+  pumpReadonly?: boolean
   createdAt: string
   updatedAt: string
   revision: number
@@ -41,4 +49,8 @@ export interface ScheduleDraft {
   operator: string
   state: ScheduleState
   orderIndex: number
+  pumpUnitId?: string
+  pumpSlotId?: string
+  shortfallM3?: number
+  pumpReadonly?: boolean
 }

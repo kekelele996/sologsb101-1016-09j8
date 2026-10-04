@@ -15,8 +15,10 @@ import {
   removeSchedule,
   reorderSchedules,
 } from '../utils/db';
+import { assignToSlot } from '../utils/pump';
 import { nowIso, uuid } from '../utils/id';
 import { usePondStore } from './pondStore';
+import { usePumpStore } from './pumpStore';
 
 /** 走水编排筛选条件 */
 export interface ScheduleFilters {
@@ -134,6 +136,33 @@ function createScheduleStore() {
     return next;
   }
 
+  /**
+   * 放行 / 改派泵位：把计划挂接到选定的泵位时段。
+   * 容量够则放行（待排→已排）；容量不够则退回待排顺延，差量写入 shortfallM3。
+   * 已出卤的计划不动。
+   */
+  async function releaseToSlot(scheduleId: string, slotId: string): Promise<{ released: boolean; shortfallM3: number }> {
+    const plan = state.rows.find((row) => row.id === scheduleId);
+    const pumpStore = usePumpStore();
+    const slot = pumpStore.slotById()[slotId];
+    if (plan === undefined || slot === undefined) return { released: false, shortfallM3: 0 };
+    if (plan.state === '已出卤') return { released: false, shortfallM3: 0 };
+    const assignment = assignToSlot(plan, slot, state.rows);
+    await db.schedules.update(scheduleId, {
+      pumpUnitId: slot.pumpUnitId,
+      pumpSlotId: slot.id,
+      shortfallM3: assignment.shortfallM3,
+      state: assignment.state,
+      updatedAt: nowIso(),
+    });
+    if (assignment.shortfallM3 > 0) {
+      setState('lastMessage', `泵位容量不足，已顺延：差 ${assignment.shortfallM3} m³（计划 ${plan.volumeM3} m³）`);
+    } else {
+      setState('lastMessage', `已放行至泵位 ${slot.date} ${slot.positionCode}，状态：${assignment.state}`);
+    }
+    return { released: assignment.shortfallM3 === 0, shortfallM3: assignment.shortfallM3 };
+  }
+
   /** 拖拽排序：把 fromId 移动到 toId 之前 */
   async function moveBefore(fromId: string, toId: string): Promise<void> {
     if (fromId === toId) return;
@@ -170,6 +199,7 @@ function createScheduleStore() {
     updateSchedule,
     deleteSchedule,
     advance,
+    releaseToSlot,
     moveBefore,
     moveToIndex,
   };

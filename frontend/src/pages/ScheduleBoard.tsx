@@ -1,7 +1,9 @@
 /**
  * /schedules 走水与出卤编排
  * 按日期排序、拖拽调整走水先后顺序、逐条推进状态；出卤完成回写池阶段与实际密度。
- * 消费模型：Schedule、Gate、Assay；复用组件：<FilterBar>、<EmptyPanel>、<StatBadge>
+ * 放行时先看该池系空着的泵位，容量不够按池排队顺延、差多少方写在计划上；
+ * 旧数据升级按池系反推泵位，推不出来的留只读。
+ * 消费模型：Schedule、Gate、Assay、PumpSlot；复用组件：<FilterBar>、<EmptyPanel>、<StatBadge>
  */
 import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
@@ -11,9 +13,11 @@ import FilterBar from '../components/common/FilterBar';
 import StatBadge from '../components/common/StatBadge';
 import StageTag from '../components/common/StageTag';
 import { usePondStore } from '../stores/pondStore';
+import { usePumpStore } from '../stores/pumpStore';
 import { useScheduleStore } from '../stores/scheduleStore';
 import { SCHEDULE_STATE_OPTIONS, type Schedule, type ScheduleDraft, type ScheduleState } from '../types/schedule';
 import { effectiveVerdict } from '../utils/brine';
+import { slotAvailableM3, slotCommittedM3 } from '../utils/pump';
 import { today } from '../utils/id';
 
 const INPUT =
@@ -45,6 +49,7 @@ function emptyDraft(pondId: string, orderIndex: number): ScheduleDraft {
 
 export default function ScheduleBoard() {
   const pondStore = usePondStore();
+  const pumpStore = usePumpStore();
   const scheduleStore = useScheduleStore();
 
   const [dialogOpen, setDialogOpen] = createSignal(false);
@@ -52,6 +57,10 @@ export default function ScheduleBoard() {
   const [deleting, setDeleting] = createSignal<Schedule | null>(null);
   const [dragOverId, setDragOverId] = createSignal<string | null>(null);
   const [draft, setDraft] = createStore<ScheduleDraft>(emptyDraft('', 1));
+
+  // 放行 / 改派泵位弹层
+  const [releasing, setReleasing] = createSignal<Schedule | null>(null);
+  const [selectedSlotId, setSelectedSlotId] = createSignal<string>('');
 
   onMount(() => {
     void pondStore.loadAll();
@@ -61,6 +70,36 @@ export default function ScheduleBoard() {
   const pondLabel = (pondId: string): string => {
     const pond = pondOf(pondId);
     return pond === null ? '（池已删除）' : `${pond.code} · ${pond.seriesName}`;
+  };
+
+  /** 某条计划可挂接的泵位时段（该池系下在用泵位，按日期排序） */
+  const slotsForSchedule = (row: Schedule) => {
+    const pond = pondOf(row.pondId);
+    if (pond === null) return [];
+    return pumpStore.activeSlotsOfSeries(pond.seriesName);
+  };
+
+  /** 放行弹层里选中泵位后的容量判定 */
+  const releasePreview = createMemo(() => {
+    const row = releasing();
+    if (row === null || selectedSlotId() === '') return null;
+    const slot = pumpStore.slotById()[selectedSlotId()];
+    if (slot === undefined) return null;
+    const available = slotAvailableM3(slot, scheduleStore.state.rows);
+    const shortfall = Math.max(0, row.volumeM3 - available);
+    return { slot, available, shortfall, released: shortfall === 0 };
+  });
+
+  const openRelease = (row: Schedule): void => {
+    setReleasing(row);
+    setSelectedSlotId(row.pumpSlotId ?? '');
+  };
+
+  const confirmRelease = async (): Promise<void> => {
+    const row = releasing();
+    if (row === null || selectedSlotId() === '') return;
+    await scheduleStore.releaseToSlot(row.id, selectedSlotId());
+    setReleasing(null);
   };
 
   const ordered = createMemo<Schedule[]>(() =>
@@ -268,18 +307,73 @@ export default function ScheduleBoard() {
                       </span>
                     </p>
                   </div>
-                  <span class={`rounded border px-2 py-0.5 text-[11px] ${STATE_STYLE[row.state]}`}>{row.state}</span>
-                  <div class="flex flex-wrap items-center gap-2">
-                    <button
-                      class="rounded-md border border-brine-300 bg-brine-50 px-2.5 py-1 text-xs text-brine-700 transition hover:bg-brine-100 disabled:opacity-50"
-                      disabled={row.state === '已出卤'}
-                      onClick={async () => {
-                        const next = await scheduleStore.advance(row.id);
-                        if (next === null) scheduleStore.setMessage('该计划已处于「已出卤」状态');
-                      }}
+                  <div class="text-xs text-slate-600">
+                    <p class="text-slate-400">泵位</p>
+                    <Show
+                      when={row.pumpReadonly !== true}
+                      fallback={<span class="rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">旧数据只读</span>}
                     >
-                      {nextStateLabel(row.state)}
-                    </button>
+                      <Show
+                        when={row.pumpSlotId !== undefined && row.pumpSlotId !== '' && pumpStore.slotById()[row.pumpSlotId] !== undefined}
+                        fallback={
+                          row.pumpUnitId !== undefined && pumpStore.unitById()[row.pumpUnitId] !== undefined ? (
+                            <p class="font-medium text-slate-600">{pumpStore.unitById()[row.pumpUnitId].code}</p>
+                          ) : (
+                            <span class="text-slate-400">未挂接</span>
+                          )
+                        }
+                      >
+                        {(() => {
+                          const slot = pumpStore.slotById()[row.pumpSlotId as string];
+                          const unit = pumpStore.unitById()[slot.pumpUnitId];
+                          return (
+                            <p class="font-medium text-slate-800">
+                              {slot.date} {slot.positionCode}
+                              <span class="ml-1 font-normal text-slate-400">{unit?.code ?? ''}</span>
+                            </p>
+                          );
+                        })()}
+                      </Show>
+                    </Show>
+                  </div>
+                  <div class="flex flex-col items-end gap-1">
+                    <span class={`rounded border px-2 py-0.5 text-[11px] ${STATE_STYLE[row.state]}`}>{row.state}</span>
+                    <Show when={row.shortfallM3 !== undefined && row.shortfallM3 > 0}>
+                      <span class="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">
+                        顺延 · 差 {row.shortfallM3} m³
+                      </span>
+                    </Show>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <Show
+                      when={row.state === '待排'}
+                      fallback={
+                        <button
+                          class="rounded-md border border-brine-300 bg-brine-50 px-2.5 py-1 text-xs text-brine-700 transition hover:bg-brine-100 disabled:opacity-50"
+                          disabled={row.state === '已出卤'}
+                          onClick={async () => {
+                            const next = await scheduleStore.advance(row.id);
+                            if (next === null) scheduleStore.setMessage('该计划已处于「已出卤」状态');
+                          }}
+                        >
+                          {nextStateLabel(row.state)}
+                        </button>
+                      }
+                    >
+                      <button
+                        class="rounded-md bg-brine-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-brine-700 disabled:opacity-50"
+                        disabled={row.pumpReadonly === true}
+                        onClick={() => openRelease(row)}
+                        title={row.pumpReadonly === true ? '旧数据只读，无对应泵组，待泵房建账' : '放行并选择空泵位'}
+                      >
+                        放行
+                      </button>
+                    </Show>
+                    <Show when={row.state !== '待排' && row.state !== '已出卤' && row.pumpReadonly !== true}>
+                      <button class="text-xs text-brine-700 hover:underline" onClick={() => openRelease(row)}>
+                        改派泵位
+                      </button>
+                    </Show>
                     <button class="text-xs text-brine-700 hover:underline" onClick={() => openEdit(row)}>
                       编辑
                     </button>
@@ -402,6 +496,116 @@ export default function ScheduleBoard() {
         <p class="text-sm leading-relaxed text-slate-600">
           将删除「{pondLabel(deleting()?.pondId ?? '')}」在 {deleting()?.planDate} 的走水计划。
         </p>
+      </AppDialog>
+
+      {/* ------------------------------ 放行 / 改派泵位 ------------------------------ */}
+      <AppDialog
+        open={releasing() !== null}
+        title={releasing()?.state === '待排' ? '放行并选择泵位' : '改派泵位'}
+        onClose={() => setReleasing(null)}
+        footer={
+          <>
+            <button class={BTN_GHOST} onClick={() => setReleasing(null)}>
+              取消
+            </button>
+            <button
+              class={BTN_PRIMARY}
+              disabled={selectedSlotId() === ''}
+              onClick={() => void confirmRelease()}
+            >
+              {releasePreview() !== null && !releasePreview()!.released ? '确认顺延' : '确认放行'}
+            </button>
+          </>
+        }
+      >
+        <Show when={releasing()}>
+          {(row) => {
+            const slots = (): ReturnType<typeof slotsForSchedule> => slotsForSchedule(row());
+            return (
+              <div class="space-y-3">
+                <div class="rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600">
+                  <p>
+                    蒸发池：<span class="font-medium text-slate-800">{pondLabel(row().pondId)}</span>
+                  </p>
+                  <p>
+                    计划日期 {row().planDate} · 计划量 <span class="tabular-nums font-medium text-slate-800">{row().volumeM3}</span> m³
+                  </p>
+                </div>
+
+                <Show
+                  when={slots().length > 0}
+                  fallback={
+                    <p class="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                      该池系暂无在用泵位时段，请先到「泵房泵位账」建泵组与泵位时段。
+                    </p>
+                  }
+                >
+                  <div class="space-y-2">
+                    <p class="text-[13px] font-medium text-slate-700">选择空泵位（按日期排序）</p>
+                    <For each={slots()}>
+                      {(slot) => {
+                        const committed = (): number => slotCommittedM3(slot, scheduleStore.state.rows);
+                        const available = (): number => slotAvailableM3(slot, scheduleStore.state.rows);
+                        const insufficient = (): boolean => row().volumeM3 > available();
+                        return (
+                          <label
+                            class={`flex cursor-pointer flex-wrap items-center gap-3 rounded-lg border px-3 py-2 transition ${
+                              selectedSlotId() === slot.id ? 'border-brine-500 bg-brine-50/60 ring-1 ring-brine-400' : 'border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="release-slot"
+                              class="accent-brine-600"
+                              checked={selectedSlotId() === slot.id}
+                              onChange={() => setSelectedSlotId(slot.id)}
+                            />
+                            <div class="min-w-[140px] flex-1">
+                              <p class="text-sm font-medium text-slate-800">
+                                {slot.date} {slot.positionCode}
+                              </p>
+                              <p class="text-xs text-slate-500">
+                                容量 <span class="tabular-nums">{slot.capacityM3}</span> · 已占用{' '}
+                                <span class="tabular-nums">{committed()}</span> · 剩余{' '}
+                                <span class="tabular-nums text-brine-700">{available()}</span> m³
+                              </p>
+                            </div>
+                            <Show when={insufficient()}>
+                              <span class="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">
+                                差 {row().volumeM3 - available()} m³
+                              </span>
+                            </Show>
+                          </label>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </Show>
+
+                <Show when={releasePreview() !== null}>
+                  {(() => {
+                    const preview = releasePreview()!;
+                    return (
+                      <Show
+                        when={preview.released}
+                        fallback={
+                          <p class="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                            该泵位容量不足，放行后将顺延：差 <span class="font-semibold">{preview.shortfall}</span> m³（计划 {row().volumeM3} m³，剩余 {preview.available} m³）。
+                            计划退回「待排」并在计划上标注差量，等泵位腾出后再放行。
+                          </p>
+                        }
+                      >
+                        <p class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                          容量充足，放行后状态为「已排」，挂接泵位 {preview.slot.date} {preview.slot.positionCode}。
+                        </p>
+                      </Show>
+                    );
+                  })()}
+                </Show>
+              </div>
+            );
+          }}
+        </Show>
       </AppDialog>
     </div>
   );

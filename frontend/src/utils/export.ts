@@ -71,6 +71,13 @@ export function parseSnapshot(text: string): SnapshotParseResult {
       return { ok: false, message: `存档缺少 ${String(key)} 数组。`, snapshot: null };
     }
   }
+  // 泵房泵位账为 v3 新增字段，旧存档可能没有，缺失时按空数组导入
+  const pumpKeys: Array<keyof DatabaseSnapshot> = ['pumpUnits', 'pumpSlots', 'pumpMeters'];
+  for (const key of pumpKeys) {
+    if (data[key] !== undefined && !Array.isArray(data[key])) {
+      return { ok: false, message: `存档字段 ${String(key)} 必须是数组。`, snapshot: null };
+    }
+  }
   return { ok: true, message: '存档校验通过。', snapshot: data as DatabaseSnapshot };
 }
 
