@@ -1,7 +1,7 @@
 /**
  * 演示数据播种（幂等）
- * 父 → 子 → 孙三层链路：蒸发池 → 闸门串级 / 卤水日观测 → 离子组分分析 → 走水编排
- * 所有 id 固定，保证 /gates、/observations、/assays、/schedules 打开就有真实串级与数据。
+ * 父 → 子 → 孙三层链路：蒸发池 → 闸门串级 / 卤水日观测 → 离子组分分析 → 走水编排 → 泵房账
+ * 所有 id 固定，保证 /gates、/observations、/assays、/schedules、/pumps 打开就有真实串级与数据。
  */
 import { db, ROW_REVISION } from './db';
 import type { Pond } from '../types/pond';
@@ -9,6 +9,10 @@ import type { Gate } from '../types/gate';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
 import type { Schedule } from '../types/schedule';
+import type { PumpGroup } from '../types/pumpGroup';
+import type { PumpPosition } from '../types/pumpPosition';
+import type { PumpSlot } from '../types/pumpSlot';
+import type { PumpMeterReading } from '../types/pumpMeterReading';
 import { autoVerdict, estimateEvapMm } from './brine';
 
 const SEED_TIME = '2026-09-01T00:30:00.000Z';
@@ -20,6 +24,12 @@ export const SEED_IDS = {
   pondC: 'pond-north-03',
   pondD: 'pond-south-04',
   pondE: 'pond-south-05',
+  groupNorth: 'group-north',
+  groupSouth: 'group-south',
+  posNorth1: 'pos-north-1',
+  posNorth2: 'pos-north-2',
+  posSouth1: 'pos-south-1',
+  posSouth2: 'pos-south-2',
 } as const;
 
 function wrap<T>(row: Omit<T, 'createdAt' | 'updatedAt' | 'revision'>): T {
@@ -128,20 +138,62 @@ export async function seedDatabase(): Promise<void> {
     }),
   ];
 
-  // ---------------- 走水编排（覆盖四种状态，orderIndex 决定先后） ----------------
-  const schedules: Schedule[] = [
-    wrap<Schedule>({ id: 'schedule-a1', pondId: SEED_IDS.pondA, planDate: '2026-10-02', targetDensity: 1.115, volumeM3: 1200, operator: '韩江', state: '已排', orderIndex: 1 }),
-    wrap<Schedule>({ id: 'schedule-d1', pondId: SEED_IDS.pondD, planDate: '2026-10-04', targetDensity: 1.098, volumeM3: 1600, operator: '王锐', state: '已排', orderIndex: 2 }),
-    wrap<Schedule>({ id: 'schedule-b1', pondId: SEED_IDS.pondB, planDate: '2026-10-06', targetDensity: 1.175, volumeM3: 900, operator: '韩江', state: '走水中', orderIndex: 3 }),
-    wrap<Schedule>({ id: 'schedule-c1', pondId: SEED_IDS.pondC, planDate: '2026-10-12', targetDensity: 1.255, volumeM3: 600, operator: '李文', state: '待排', orderIndex: 4 }),
-    wrap<Schedule>({ id: 'schedule-e1', pondId: SEED_IDS.pondE, planDate: '2026-09-28', targetDensity: 1.15, volumeM3: 700, operator: '王锐', state: '已出卤', orderIndex: 5 }),
+  // ---------------- 泵房账：泵组与泵位（按池系，一大一小两泵位） ----------------
+  const pumpGroups: PumpGroup[] = [
+    wrap<PumpGroup>({ id: SEED_IDS.groupNorth, code: '北泵1#', name: '北部一系泵房一组', seriesName: '北部一系', master: '赵泵', status: '运行' }),
+    wrap<PumpGroup>({ id: SEED_IDS.groupSouth, code: '南泵1#', name: '南部二系泵房一组', seriesName: '南部二系', master: '钱潮', status: '运行' }),
   ];
 
-  await db.transaction('rw', db.ponds, db.gates, db.observations, db.assays, db.schedules, async () => {
-    await db.ponds.bulkPut(ponds);
-    await db.gates.bulkPut(gates);
-    await db.observations.bulkPut(observations);
-    await db.assays.bulkPut(assays);
-    await db.schedules.bulkPut(schedules);
-  });
+  const pumpPositions: PumpPosition[] = [
+    wrap<PumpPosition>({ id: SEED_IDS.posNorth1, groupId: SEED_IDS.groupNorth, code: '北-1号位', capacityM3: 1500, status: '运行', note: '大泵，主走水' }),
+    wrap<PumpPosition>({ id: SEED_IDS.posNorth2, groupId: SEED_IDS.groupNorth, code: '北-2号位', capacityM3: 900, status: '运行', note: '小泵，控流走水' }),
+    wrap<PumpPosition>({ id: SEED_IDS.posSouth1, groupId: SEED_IDS.groupSouth, code: '南-1号位', capacityM3: 1800, status: '运行', note: '大泵，主走水' }),
+    wrap<PumpPosition>({ id: SEED_IDS.posSouth2, groupId: SEED_IDS.groupSouth, code: '南-2号位', capacityM3: 800, status: '停用', note: '机封检修，临时停泵' }),
+  ];
+
+  // ---------------- 走水编排（覆盖待排 / 已排 / 走水中 / 已出卤 + 旧数据只读） ----------------
+  const schedules: Schedule[] = [
+    wrap<Schedule>({ id: 'schedule-a1', pondId: SEED_IDS.pondA, planDate: '2026-10-02', targetDensity: 1.115, volumeM3: 1200, operator: '韩江', state: '已排', orderIndex: 1, pumpSlotId: 'slot-a1', shortfallM3: 0, slotInferred: false, legacyReadonly: false }),
+    wrap<Schedule>({ id: 'schedule-d1', pondId: SEED_IDS.pondD, planDate: '2026-10-04', targetDensity: 1.098, volumeM3: 1600, operator: '王锐', state: '已排', orderIndex: 2, pumpSlotId: 'slot-d1', shortfallM3: 0, slotInferred: false, legacyReadonly: false }),
+    wrap<Schedule>({ id: 'schedule-b1', pondId: SEED_IDS.pondB, planDate: '2026-10-06', targetDensity: 1.175, volumeM3: 900, operator: '韩江', state: '走水中', orderIndex: 3, pumpSlotId: 'slot-b1', shortfallM3: 0, slotInferred: false, legacyReadonly: false }),
+    wrap<Schedule>({ id: 'schedule-c1', pondId: SEED_IDS.pondC, planDate: '2026-10-12', targetDensity: 1.255, volumeM3: 600, operator: '李文', state: '待排', orderIndex: 4, pumpSlotId: null, shortfallM3: 0, slotInferred: false, legacyReadonly: false }),
+    wrap<Schedule>({ id: 'schedule-e1', pondId: SEED_IDS.pondE, planDate: '2026-09-28', targetDensity: 1.15, volumeM3: 700, operator: '王锐', state: '已出卤', orderIndex: 5, pumpSlotId: 'slot-e1', shortfallM3: 0, slotInferred: false, legacyReadonly: false }),
+    // 旧系统遗留：缺泵位归属且当日泵位全占、按池系反推不出来 → 留只读等调度员处理
+    wrap<Schedule>({ id: 'schedule-c2-legacy', pondId: SEED_IDS.pondC, planDate: '2026-10-12', targetDensity: 1.262, volumeM3: 500, operator: '韩江', state: '已排', orderIndex: 6, pumpSlotId: null, shortfallM3: 0, slotInferred: false, legacyReadonly: true }),
+  ];
+
+  // ---------------- 泵位时段（与已放行计划一一对应；已出卤的落为「已完成」） ----------------
+  const pumpSlots: PumpSlot[] = [
+    wrap<PumpSlot>({ id: 'slot-a1', positionId: SEED_IDS.posNorth1, seriesName: '北部一系', planDate: '2026-10-02', slotIndex: 1, volumeM3: 1200, state: '已排', scheduleId: 'schedule-a1' }),
+    wrap<PumpSlot>({ id: 'slot-d1', positionId: SEED_IDS.posSouth1, seriesName: '南部二系', planDate: '2026-10-04', slotIndex: 1, volumeM3: 1600, state: '已排', scheduleId: 'schedule-d1' }),
+    wrap<PumpSlot>({ id: 'slot-b1', positionId: SEED_IDS.posNorth2, seriesName: '北部一系', planDate: '2026-10-06', slotIndex: 1, volumeM3: 900, state: '走水中', scheduleId: 'schedule-b1' }),
+    wrap<PumpSlot>({ id: 'slot-e1', positionId: SEED_IDS.posSouth1, seriesName: '南部二系', planDate: '2026-09-28', slotIndex: 1, volumeM3: 700, state: '已完成', scheduleId: 'schedule-e1' }),
+  ];
+
+  // ---------------- 泵房抄表（平 / 超差待复核 / 缺抄表 三种对账状态） ----------------
+  const pumpMeterReadings: PumpMeterReading[] = [
+    // 北-01：计划 1200，抄表 1200，容差内平
+    wrap<PumpMeterReading>({ id: 'reading-a1', date: '2026-10-02', pondId: SEED_IDS.pondA, seriesName: '北部一系', positionId: SEED_IDS.posNorth1, startReading: 10000, endReading: 11200, netVolumeM3: 1200, reader: '赵泵', note: '' }),
+    // 南-04：计划 1600，抄表 1480，差 120 方超容差，等泵房复核
+    wrap<PumpMeterReading>({ id: 'reading-d1', date: '2026-10-04', pondId: SEED_IDS.pondD, seriesName: '南部二系', positionId: SEED_IDS.posSouth1, startReading: 20000, endReading: 21480, netVolumeM3: 1480, reader: '钱潮', note: '调度室对账超差，等泵房复核表底' }),
+    // 南-05：计划 700（已出卤），抄表 720，差 20 方平
+    wrap<PumpMeterReading>({ id: 'reading-e1', date: '2026-09-28', pondId: SEED_IDS.pondE, seriesName: '南部二系', positionId: SEED_IDS.posSouth1, startReading: 8400, endReading: 9120, netVolumeM3: 720, reader: '钱潮', note: '' }),
+    // 北-02（schedule-b1 走水中）暂无抄表 → 对账「缺抄表」
+  ];
+
+  await db.transaction(
+    'rw',
+    [db.ponds, db.gates, db.observations, db.assays, db.schedules, db.pumpGroups, db.pumpPositions, db.pumpSlots, db.pumpMeterReadings],
+    async () => {
+      await db.ponds.bulkPut(ponds);
+      await db.gates.bulkPut(gates);
+      await db.observations.bulkPut(observations);
+      await db.assays.bulkPut(assays);
+      await db.schedules.bulkPut(schedules);
+      await db.pumpGroups.bulkPut(pumpGroups);
+      await db.pumpPositions.bulkPut(pumpPositions);
+      await db.pumpSlots.bulkPut(pumpSlots);
+      await db.pumpMeterReadings.bulkPut(pumpMeterReadings);
+    },
+  );
 }

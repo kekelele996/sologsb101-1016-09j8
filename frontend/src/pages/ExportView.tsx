@@ -6,7 +6,9 @@ import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import StatBadge from '../components/common/StatBadge';
 import EmptyPanel from '../components/common/EmptyPanel';
 import StageTag from '../components/common/StageTag';
+import ReconcilePanel from '../components/pump/ReconcilePanel';
 import { usePondStore } from '../stores/pondStore';
+import { usePumpStore } from '../stores/pumpStore';
 import { DB_NAME, DB_SCHEMA_VERSION, exportSnapshot, importSnapshot, resetDatabase } from '../utils/db';
 import { buildBriefingText, copyText, exportProgressCsvFile, exportSnapshotJson, parseSnapshot } from '../utils/export';
 import { effectiveVerdict } from '../utils/brine';
@@ -17,6 +19,7 @@ const BTN_DANGER = 'rounded-md bg-rose-600 px-3.5 py-1.5 text-sm font-medium tex
 
 export default function ExportView() {
   const store = usePondStore();
+  const pumpStore = usePumpStore();
   const [message, setMessage] = createSignal('');
   const [resetOpen, setResetOpen] = createSignal(false);
 
@@ -42,6 +45,9 @@ export default function ExportView() {
       passPct: assays.length === 0 ? 0 : Math.round((passCount / assays.length) * 1000) / 10,
       donePct: schedules.length === 0 ? 0 : Math.round((done / schedules.length) * 1000) / 10,
       readyPonds,
+      pumpGroups: pumpStore.state.groups.length,
+      pumpPositions: pumpStore.state.positions.length,
+      readings: pumpStore.state.readings.length,
     };
   });
 
@@ -57,6 +63,7 @@ export default function ExportView() {
       store.state.observations,
       store.state.assays,
       store.state.schedules,
+      pumpStore.state.readings,
     );
     setMessage(`已导出晒程进度汇总 ${filename}`);
   };
@@ -108,12 +115,14 @@ export default function ExportView() {
         />
         <StatBadge label="出卤候选池" value={summary().readyPonds} suffix="口" tone="success" />
         <StatBadge label="出卤完成率" value={`${summary().donePct}%`} percent={summary().donePct} tone="primary" />
+        <StatBadge label="泵组 / 泵位" value={`${summary().pumpGroups} / ${summary().pumpPositions}`} tone="info" hint="泵房账：泵组、泵位与容量" />
+        <StatBadge label="泵房抄表" value={summary().readings} suffix="条" tone="default" />
         <StatBadge
           label="数据结构版本"
           value={`v${DB_SCHEMA_VERSION}`}
           suffix={`· ${DB_NAME}`}
           tone="default"
-          hint="IndexedDB 库名与结构版本；v1 建表与 pondId+date 复合索引，v2 新增 evapMm 并迁移旧记录"
+          hint="v1 建表；v2 新增 evapMm；v3 接入泵房账（泵组/泵位/时段/抄表）并为旧计划按池系反推泵位归属"
         />
       </div>
 
@@ -226,12 +235,14 @@ export default function ExportView() {
         </Show>
       </section>
 
+      <ReconcilePanel />
+
       <Show when={resetOpen()}>
         <div class="fixed inset-0 z-40 flex items-start justify-center bg-slate-900/40 p-8">
           <div class="w-full max-w-lg rounded-xl bg-white shadow-2xl">
             <div class="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-800">确认重置本地数据？</div>
             <div class="px-4 py-4 text-sm leading-relaxed text-slate-600">
-              全部蒸发池、闸门串级、卤水日观测、离子组分分析与走水编排都会被清空，并重新灌入演示数据。
+              全部蒸发池、闸门串级、卤水日观测、离子组分分析、走水编排与泵房账（泵组 / 泵位 / 时段 / 抄表）都会被清空，并重新灌入演示数据。
             </div>
             <div class="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
               <button class={BTN_GHOST} onClick={() => setResetOpen(false)}>

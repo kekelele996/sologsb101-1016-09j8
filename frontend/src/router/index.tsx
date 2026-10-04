@@ -1,6 +1,6 @@
 /**
  * 路由表（@solidjs/router）
- * /ponds、/gates、/observations、/assays、/schedules、/export
+ * /ponds、/gates、/observations、/assays、/schedules、/pumps、/export
  * 每个路由都可以直接粘贴 URL 刷新打开（nginx 已配置 try_files 回退）。
  */
 import { Navigate, Route, Router } from '@solidjs/router';
@@ -10,6 +10,7 @@ import GateConfig from '../pages/GateConfig';
 import ObservationEntry from '../pages/ObservationEntry';
 import AssayEntry from '../pages/AssayEntry';
 import ScheduleBoard from '../pages/ScheduleBoard';
+import PumpRoom from '../pages/PumpRoom';
 import ExportView from '../pages/ExportView';
 
 /** 路由路径常量：全项目唯一来源，避免手写字符串不一致 */
@@ -19,6 +20,7 @@ export const ROUTES = {
   observations: '/observations',
   assays: '/assays',
   schedules: '/schedules',
+  pumps: '/pumps',
   export: '/export',
 } as const;
 
@@ -28,7 +30,8 @@ export const NAV_ITEMS = [
   { path: ROUTES.gates, label: '闸门串级', hint: '走向拓扑 · 开度就地编辑' },
   { path: ROUTES.observations, label: '卤水日观测', hint: '密度 · 温度 · 蒸发量' },
   { path: ROUTES.assays, label: '离子组分', hint: '达标判定 · 组分曲线' },
-  { path: ROUTES.schedules, label: '走水编排', hint: '拖拽排序 · 出卤推进' },
+  { path: ROUTES.schedules, label: '走水编排', hint: '放行选泵位 · 按池排队' },
+  { path: ROUTES.pumps, label: '泵房账', hint: '泵组泵位 · 抄表 · 对账' },
   { path: ROUTES.export, label: '晒程汇总', hint: '进度 · JSON 导入导出' },
 ] as const;
 
@@ -41,6 +44,7 @@ export function AppRouter() {
       <Route path={ROUTES.observations} component={ObservationEntry} />
       <Route path={ROUTES.assays} component={AssayEntry} />
       <Route path={ROUTES.schedules} component={ScheduleBoard} />
+      <Route path={ROUTES.pumps} component={PumpRoom} />
       <Route path={ROUTES.export} component={ExportView} />
       <Route path="*" component={() => <Navigate href={ROUTES.ponds} />} />
     </Router>

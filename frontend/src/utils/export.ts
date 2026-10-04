@@ -8,7 +8,9 @@ import type { Pond } from '../types/pond';
 import type { Observation } from '../types/observation';
 import type { Assay } from '../types/assay';
 import type { Schedule } from '../types/schedule';
+import type { PumpMeterReading } from '../types/pumpMeterReading';
 import { effectiveVerdict, pondVolumeM3, round1 } from './brine';
+import { RECONCILE_TOLERANCE_M3 } from './pump';
 import { stampSuffix } from './id';
 
 /** 触发浏览器下载 */
@@ -65,8 +67,9 @@ export function parseSnapshot(text: string): SnapshotParseResult {
       snapshot: null,
     };
   }
-  const keys: Array<keyof DatabaseSnapshot> = ['ponds', 'gates', 'observations', 'assays', 'schedules'];
-  for (const key of keys) {
+  // 泵房四张表为 v3 新增：旧版（v2）存档允许缺表，导入时 db.importSnapshot 会补空默认
+  const requiredKeys: Array<keyof DatabaseSnapshot> = ['ponds', 'gates', 'observations', 'assays', 'schedules'];
+  for (const key of requiredKeys) {
     if (!Array.isArray(data[key])) {
       return { ok: false, message: `存档缺少 ${String(key)} 数组。`, snapshot: null };
     }
@@ -74,8 +77,14 @@ export function parseSnapshot(text: string): SnapshotParseResult {
   return { ok: true, message: '存档校验通过。', snapshot: data as DatabaseSnapshot };
 }
 
-/** 生成晒程进度汇总 CSV */
-export function buildProgressCsv(ponds: Pond[], observations: Observation[], assays: Assay[], schedules: Schedule[]): string {
+/** 生成晒程进度汇总 CSV（含泵房抄表净量与按池对账列） */
+export function buildProgressCsv(
+  ponds: Pond[],
+  observations: Observation[],
+  assays: Assay[],
+  schedules: Schedule[],
+  readings: PumpMeterReading[] = [],
+): string {
   const header = [
     '池号',
     '池系',
@@ -91,7 +100,11 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
     '化验条数',
     '最近判定',
     '走水计划数',
+    '已放行计划量之和(m³)',
     '已完成出卤数',
+    '泵房抄表净量(m³)',
+    '计划-抄表差额(m³)',
+    `对账(容差±${RECONCILE_TOLERANCE_M3})`,
   ];
   const lines: string[] = [header.map(csvCell).join(',')];
   ponds.forEach((pond) => {
@@ -100,6 +113,15 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
     const pondAssays = assays.filter((row) => row.pondId === pond.id).sort((a, b) => a.date.localeCompare(b.date));
     const latestAssay = pondAssays.length > 0 ? pondAssays[pondAssays.length - 1] : null;
     const pondSchedules = schedules.filter((row) => row.pondId === pond.id);
+    const released = pondSchedules.filter((row) => row.state !== '待排');
+    const planVolume = Math.round(released.reduce((acc, row) => acc + row.volumeM3, 0) * 10) / 10;
+    const pondReadings = readings.filter((row) => row.pondId === pond.id);
+    const netVolume = Math.round(pondReadings.reduce((acc, row) => acc + row.netVolumeM3, 0) * 10) / 10;
+    const diff = Math.round((planVolume - netVolume) * 10) / 10;
+    let reconcile: string;
+    if (released.length > 0 && pondReadings.length === 0) reconcile = '缺抄表';
+    else if (Math.abs(diff) > RECONCILE_TOLERANCE_M3) reconcile = '超差待复核';
+    else reconcile = '平';
     lines.push(
       [
         pond.code,
@@ -116,7 +138,11 @@ export function buildProgressCsv(ponds: Pond[], observations: Observation[], ass
         pondAssays.length,
         latestAssay === null ? '—' : effectiveVerdict(latestAssay),
         pondSchedules.length,
+        planVolume,
         pondSchedules.filter((row) => row.state === '已出卤').length,
+        pondReadings.length === 0 ? '—' : netVolume,
+        pondReadings.length === 0 ? '—' : diff,
+        reconcile,
       ]
         .map(csvCell)
         .join(','),
@@ -131,9 +157,10 @@ export function exportProgressCsvFile(
   observations: Observation[],
   assays: Assay[],
   schedules: Schedule[],
+  readings: PumpMeterReading[] = [],
 ): string {
   const filename = `盐湖晒程进度汇总-${stampSuffix()}.csv`;
-  download(filename, buildProgressCsv(ponds, observations, assays, schedules), 'text/csv;charset=utf-8');
+  download(filename, buildProgressCsv(ponds, observations, assays, schedules, readings), 'text/csv;charset=utf-8');
   return filename;
 }
 
